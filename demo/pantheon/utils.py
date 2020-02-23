@@ -55,7 +55,7 @@ def parse_args():
 def sample_generator(max_n):
     def wrapper():
         for i in range(max_n):
-            yield [i]
+            yield [np.random.rand(3, 224, 224), np.random.rand(1)]
 
     return wrapper
 
@@ -78,14 +78,25 @@ def sample_list_generator(max_n, batch_size=500):
 # data_generator
 def batch_generator(max_n, batch_size=500):
     def wrapper():
-        batch = []
+        data_batch = []
+        label_batch = []
         for sample in sample_generator(max_n)():
-            if len(batch) < batch_size:
-                batch.append(sample)
-            if len(batch) == batch_size:
-                yield [np.array(batch).astype('int64').reshape((-1, 1))]
-                batch = []
-        if len(batch) > 0:
-            yield [np.array(batch).astype('int64').reshape((-1, 1))]
+            if len(data_batch) < batch_size:
+                data_batch.append(sample[0])
+                label_batch.append(sample[1])
+            if len(data_batch) == batch_size:
+                yield [
+                    np.array(data_batch).astype('float32').reshape(
+                        (-1, 3, 224, 224)),
+                    np.array(label_batch).astype('int64').reshape((-1, 1))
+                ]
+                data_batch = []
+                label_batch = []
+        if len(data_batch) > 0:
+            yield [
+                np.array(data_batch).astype('float32').reshape(
+                    (-1, 3, 224, 224)),
+                np.array(label_batch).astype('int64').reshape((-1, 1))
+            ]
 
     return wrapper

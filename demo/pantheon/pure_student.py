@@ -65,7 +65,7 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=32,
+        default=128,
         help="The batch size of student model. (default: %(default)s)")
     args = parser.parse_args()
     return args
@@ -80,21 +80,21 @@ def run(args):
         raise ValueError(
             "One of args.in_address0 and args.in_path0 must be valid!")
 
-    student = Student(merge_strategy={"result": "sum"})
+    #student = Student(merge_strategy={"result": "sum"})
 
-    student.register_teacher(
-        in_address=args.in_address0, in_path=args.in_path0)
-    student.start()
+    #student.register_teacher(
+    #    in_address=args.in_address0, in_path=args.in_path0)
+    #student.start()
 
     if args.test_send_recv:
-        for t in range(2):
-            for i in range(3):
+        for t in xrange(2):
+            for i in xrange(3):
                 print(student.recv(t))
         student.send("message from student!")
 
-    knowledge_desc = student.get_knowledge_desc()
-    data_generator = student.get_knowledge_generator(
-        batch_size=args.batch_size, drop_last=False)
+    #knowledge_desc = student.get_knowledge_desc()
+    #data_generator = student.get_knowledge_generator(
+    #    batch_size=args.batch_size, drop_last=False)
 
     def data_reader():
         def reader():
@@ -102,6 +102,48 @@ def run(args):
                 yield data['feed_image'], data['feed_label'], data['knowledge']
 
         return reader
+
+    def sample_generator(max_n):
+        def wrapper():
+            for i in range(max_n):
+                yield [
+                    np.random.rand(3, 224, 224), np.random.rand(1),
+                    np.random.rand(1000)
+                ]
+
+        return wrapper
+
+    def batch_generator(max_n, batch_size=128):
+        def wrapper():
+            data_batch = []
+            label_batch = []
+            knowledge_batch = []
+            for sample in sample_generator(max_n)():
+                if len(data_batch) < batch_size:
+                    data_batch.append(sample[0])
+                    label_batch.append(sample[1])
+                    knowledge_batch.append(sample[2])
+                if len(data_batch) == batch_size:
+                    yield [
+                        np.array(data_batch).astype('float32').reshape(
+                            (-1, 3, 224, 224)),
+                        np.array(label_batch).astype('int64').reshape((-1, 1)),
+                        np.array(knowledge_batch).astype('float32').reshape(
+                            (-1, 1000))
+                    ]
+                    data_batch = []
+                    label_batch = []
+                    knowledge_batch = []
+            if len(data_batch) > 0:
+                yield [
+                    np.array(data_batch).astype('float32').reshape(
+                        (-1, 3, 224, 224)),
+                    np.array(label_batch).astype('int64').reshape((-1, 1)),
+                    np.array(knowledge_batch).astype('float32').reshape(
+                        (-1, 1000))
+                ]
+
+        return wrapper
 
     assert args.model in model_list, "{} is not in lists: {}".format(
         args.model, model_list)
@@ -134,11 +176,6 @@ def run(args):
                 learning_rate=0.1, momentum=0.9)
             opt.minimize(loss)
 
-    build_strategy = fluid.BuildStrategy()
-    build_strategy.fuse_all_reduce_ops = False
-    parallel_main = fluid.CompiledProgram(student_main).with_data_parallel(
-        loss_name=loss.name, build_strategy=build_strategy)
-
     student_vars = []
     for v in student_main.list_vars():
         try:
@@ -147,11 +184,18 @@ def run(args):
             pass
     #print(student_vars)
 
+    build_strategy = fluid.BuildStrategy()
+    build_strategy.fuse_all_reduce_ops = False
+    student_main = fluid.CompiledProgram(student_main).with_data_parallel(
+        loss_name=loss.name, build_strategy=build_strategy)
+
     places = fluid.cuda_places() if args.use_cuda else fluid.cpu_places()
     place = fluid.CUDAPlace(0) if args.use_cuda else fluid.CPUPlace()
     exe = fluid.Executor(place)
     exe.run(student_startup)
-    train_loader.set_batch_generator(data_reader(), places=places)
+    train_loader.set_batch_generator(
+        batch_generator(
+            1000000, batch_size=128), places=places)
 
     for step_id, batch_data in enumerate(train_loader):
         fetch_np = exe.run(student_main, batch_data, fetch_list=[loss.name])
