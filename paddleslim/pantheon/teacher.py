@@ -30,6 +30,7 @@ from multiprocessing.managers import BaseManager
 from threading import Thread
 
 import paddle.fluid as fluid
+from paddle.fluid.core import PaddleTensor
 
 from paddleslim.pantheon.utils import convert_dtype, EndSignal, SyncSignal, StartSignal, public_authkey
 
@@ -491,6 +492,139 @@ class Teacher(object):
             if outputs:
                 out_buf_queue.put(outputs)
                 num_batches_sent += (index + 1)
+
+            print("Processed {} batch samples in total.".format(
+                num_batches_sent))
+
+            out_buf_queue.put(EndSignal())
+            out_buf_queue.join()
+
+        if self._knowledge_queue:
+            self._knowledge_queue.join()
+        print(
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())) +
+            "  Teacher ends serving.")
+
+    def start_cpp_knowledge_service(self,
+                                    schema,
+                                    predictor,
+                                    reader,
+                                    buf_size=10,
+                                    times=1):
+        """
+        Args:
+            schema (dict):
+            predictor (predictor): Inference program for the teacher model.
+            reader_config (dict): The config for data reader. Support all the 
+                three types of generators used by `fluid.io.PyReader` and 
+                `fluid.io.DataLoader`, and their configs contain the key-value 
+                pair of the generator type and a generator object, plus
+                other necessary argument pairs. See the following: 
+
+                The trial to parse config will be in the order of 1) -> 3), and 
+                any other unrelated keys in these configs will be ignored.
+            buf_size (int): The size of buffers for data reader and knowledge 
+                            writer on each device. 
+            times (int): The maximum repeated serving times. Default 1. Whenever 
+                         the public method 'get_knowledge_generator()' in Student 
+                         object called once, the serving times will be added one, 
+                         until reaching the maximum and ending the service. Only 
+                         valid in online mode, and will be ignored in offline mode.
+        """
+        if not self._started:
+            raise ValueError("The method start() should be called first!")
+
+        self._predictor = predictor
+
+        self._schema = schema
+
+        if not buf_size > 0:
+            raise ValueError("The buffer size should be positive!")
+        self._buf_size = buf_size
+
+        if not times > 0:
+            raise ValueError("Repeated serving times should be positive!")
+        self._times = times
+        if self._times > 1 and self._out_file:
+            self._times = 1
+            print("WARNING: args 'times' will be ignored in offline mode")
+
+        desc = self._schema
+
+        if not self._knowledge_desc:
+            self._knowledge_desc = desc
+        else:
+            if self._out_file and not self._knowledge_desc == desc:
+                raise ValueError("The knowledge description should be kept "
+                                 "consistent in offline mode!")
+
+        dev_count = 1
+
+        def writer(buf_queue, schema_keys):
+            samples_sent, batches_sent = 0, 0
+            while True:
+                outputs = buf_queue.get()
+                buf_queue.task_done()
+                if not isinstance(outputs, EndSignal):
+                    batch_samples = dict(zip(schema_keys, outputs))
+                    if self._knowledge_queue:
+                        self._knowledge_queue.put(batch_samples)
+                    if self._out_file:
+                        self._out_file.write(pickle.dumps(batch_samples))
+                else:
+                    if self._knowledge_queue:
+                        self._knowledge_queue.put(EndSignal())
+                    # should close file in child thread to wait for all 
+                    # writing finished
+                    if self._out_file:
+                        self._out_file.close()
+
+        # Asynchronous output
+        out_buf_queue = Queue.Queue(self._buf_size)
+        schema_keys, schema_vars = zip(*list(self._schema.items()))
+        out_thread = Thread(target=writer, args=(out_buf_queue, schema_keys))
+        out_thread.daemon = True
+        out_thread.start()
+
+        print("Knowledge description {}".format(self._knowledge_desc))
+        print(
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())) +
+            "  Teacher begins to serve ...")
+        # For offline dump, write the knowledge description to the head of file
+        if self._out_file:
+            self._out_file.write(pickle.dumps(self._knowledge_desc))
+            print("output path: %s" % self._out_path)
+
+        # For online mode, send knowledge description every time
+        for repeated in range(self._times):
+            if self._knowledge_queue:
+                # wait for the accessing of knowledge desc and data
+                while True:
+                    if self._sync_required:
+                        self._knowledge_queue.put(SyncSignal())
+                        self._knowledge_queue.put(self._knowledge_desc)
+                        self._sync_required = False
+                    if self._data_required:
+                        self._data_required = False
+                        break
+                self._knowledge_queue.join()
+
+            print("No.{} time serving ... ".format(repeated))
+            num_batches_sent = 0
+            for data in reader():
+                if self._sync_required:
+                    break
+                outputs = self._predictor.run(list(map(PaddleTensor, data)))
+                outputs = [output.as_ndarray() for output in outputs]
+                out_buf_queue.put(outputs)
+                num_batches_sent += dev_count
+                if num_batches_sent % (100 * dev_count) == 0:
+                    log = "Processed {} batch samples.".format(
+                        num_batches_sent)
+                    if self._knowledge_queue:
+                        log += " Knowledge queue size {}.".format(
+                            self._knowledge_queue.qsize())
+                    print(log)
 
             print("Processed {} batch samples in total.".format(
                 num_batches_sent))
