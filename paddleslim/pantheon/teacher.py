@@ -615,8 +615,7 @@ class Teacher(object):
                 if self._sync_required:
                     break
                 outputs = self._predictor.run(list(map(PaddleTensor, data)))
-                outputs = [output.as_ndarray() for output in outputs]
-                out_buf_queue.put(outputs)
+                out_buf_queue.put([output.as_ndarray() for output in outputs])
                 num_batches_sent += dev_count
                 if num_batches_sent % (100 * dev_count) == 0:
                     log = "Processed {} batch samples.".format(
