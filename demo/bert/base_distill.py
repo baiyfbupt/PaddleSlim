@@ -15,7 +15,7 @@ def main():
     bert_config_path = BERT_BASE_PATH + "/bert_config.json"
     vocab_path = BERT_BASE_PATH + "/vocab.txt"
     data_dir = "./data/glue_data/MNLI/"
-    teacher_model_dir="./teacher_model/steps_23000.pdparams"
+    teacher_model_dir="./teacher_model/steps_23000"
     num_imgs = 392702
     max_seq_len = 512
     do_lower_case = True
@@ -64,8 +64,8 @@ def main():
                 loss, ce_loss, kd_loss, e_loss = model.loss(train_data)
                 loss.backward()
 
-                #NOTE grad clip is removed
-                optimizer.minimize(loss)
+                grad_clip = fluid.dygraph_grad_clip.GradClipByGlobalNorm(5)
+                optimizer.minimize(loss, grad_clip)
                 model.clear_gradients()
 
                 batch_size = train_data[0].shape[0]
