@@ -50,7 +50,8 @@ class AdaBERTClassifier(Layer):
                  beta=4,
                  conv_type="conv_bn",
                  search_layer=True,
-                 teacher_model=None):
+                 teacher_model=None,
+                 data_dir=None):
         super(AdaBERTClassifier, self).__init__()
         self._n_layer = n_layer
         self._num_labels = num_labels
@@ -60,11 +61,13 @@ class AdaBERTClassifier(Layer):
         self._beta = beta
         self._conv_type = conv_type
         self._search_layer = search_layer
+        self._teacher_model = teacher_model
+        self._data_dir = data_dir
         print(
             "----------------------load teacher model and test----------------------------------------"
         )
-        self.teacher = BERTClassifier(num_labels, model_path=teacher_model)
-        self.teacher.test("/work/PaddleSlim/demo/bert/data/glue_data/MNLI/")
+        self.teacher = BERTClassifier(num_labels, model_path=self._teacher_model)
+        self.teacher.test(self._data_dir)
         print(
             "----------------------finish load teacher model and test----------------------------------------"
         )
@@ -104,7 +107,7 @@ class AdaBERTClassifier(Layer):
     def new(self):
         model_new = AdaBERTClassifier(
             3,
-            teacher_model="/work/PaddleSlim/demo/bert_1/checkpoints/steps_23000"
+            teacher_model=self._teacher_model
         )
         return model_new
 
