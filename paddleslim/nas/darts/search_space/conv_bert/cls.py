@@ -49,7 +49,7 @@ class AdaBERTClassifier(Layer):
                  gamma=0.8,
                  beta=4,
                  conv_type="conv_bn",
-                 search_layer=True,
+                 search_layer=False,
                  teacher_model=None,
                  data_dir=None):
         super(AdaBERTClassifier, self).__init__()
@@ -104,13 +104,6 @@ class AdaBERTClassifier(Layer):
     def genotype(self):
         return self.arch_parameters()
 
-    def new(self):
-        model_new = AdaBERTClassifier(
-            3,
-            teacher_model=self._teacher_model
-        )
-        return model_new
-
     def loss(self, data_ids):
         T = 1.0
         src_ids = data_ids[0]
@@ -118,14 +111,13 @@ class AdaBERTClassifier(Layer):
         sentence_ids = data_ids[2]
         input_mask = data_ids[3]
         labels = data_ids[4]
-        flops = []
-        model_size = []
+
         enc_output = self.student(
             src_ids,
             position_ids,
             sentence_ids,
-            flops=flops,
-            model_size=model_size)
+            flops=[],
+            model_size=[])
 
         ce_loss, probs = fluid.layers.softmax_with_cross_entropy(
             logits=enc_output, label=labels, return_softmax=True)
