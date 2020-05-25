@@ -23,6 +23,9 @@ import numpy as np
 import paddle
 import paddle.fluid as fluid
 from paddle.fluid.dygraph import Embedding, LayerNorm, Linear, to_variable, Layer, guard
+from paddle.fluid.dygraph.nn import Conv2D, Pool2D, BatchNorm, Linear
+from paddle.fluid import ParamAttr
+from paddle.fluid.initializer import MSRA
 from .transformer_encoder import EncoderLayer
 
 
@@ -37,7 +40,7 @@ class BertModelLayer(Layer):
                  return_pooled_out=True,
                  initializer_range=1.0,
                  conv_type="conv_bn",
-                 search_layer=True,
+                 search_layer=False,
                  use_fp16=False):
         super(BertModelLayer, self).__init__()
 
@@ -96,6 +99,16 @@ class BertModelLayer(Layer):
             conv_type=self._conv_type,
             search_layer=self._search_layer)
 
+        self.pool2d_avg = Pool2D(pool_type='avg', global_pooling=True)
+
+        self.out = Linear(
+            768,
+            3,
+            param_attr=ParamAttr(
+                initializer=MSRA(), name=self.full_name() + "fc7_weights"),
+            bias_attr=ParamAttr(name="fc7_offset"))
+
+
     def max_flops(self):
         return self._encoder.max_flops
 
@@ -123,18 +136,13 @@ class BertModelLayer(Layer):
 
         emb_out = self._emb_fac(emb_out)
 
-        enc_outputs, k_i = self._encoder(
+        enc_output = self._encoder(
             emb_out, flops=flops, model_size=model_size)
+        #print(enc_output.shape)
 
-        if not self.return_pooled_out:
-            return enc_outputs
-        next_sent_feats = []
-        for enc_output in enc_outputs:
-            next_sent_feat = fluid.layers.slice(
-                input=enc_output, axes=[1], starts=[0], ends=[1])
-            next_sent_feat = self.pooled_fc(next_sent_feat)
-            next_sent_feat = fluid.layers.reshape(
-                next_sent_feat, shape=[-1, self._hidden_size])
-            next_sent_feats.append(next_sent_feat)
+        enc_output = self.pool2d_avg(enc_output)
+        enc_output = fluid.layers.reshape(enc_output, shape=[-1, 0])
+        #print(enc_output.shape)
+        enc_output = self.out(enc_output)
 
-        return enc_outputs, next_sent_feats, k_i
+        return enc_output

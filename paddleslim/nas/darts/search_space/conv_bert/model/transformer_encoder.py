@@ -91,8 +91,8 @@ OPS = {
     'dil_conv_bn_5': lambda n_channel, name: ConvBNRelu(n_channel, n_channel, filter_size=[5, 1], dilation=2, name=name),
     'dil_conv_bn_7': lambda n_channel, name: ConvBNRelu(n_channel, n_channel, filter_size=[7, 1], dilation=2, name=name),
 
-    'avg_pool_3': lambda n_channel, name: Pool2D(pool_size=(3, 1), pool_padding=(1, 0), pool_type='avg'),
-    'max_pool_3': lambda n_channel, name: Pool2D(pool_size=(3, 1), pool_padding=(1, 0), pool_type='max'),
+    'avg_pool_3': lambda n_channel, name: Pool2D(pool_size=(3,1), pool_padding=(1, 0), pool_type='avg'),
+    'max_pool_3': lambda n_channel, name: Pool2D(pool_size=(3,1), pool_padding=(1, 0), pool_type='max'),
     'none': lambda n_channel, name: Zero(),
     'skip_connect': lambda n_channel, name: Identity(),
 }
@@ -117,6 +117,7 @@ class MixedOp(fluid.dygraph.Layer):
 
     def forward(self, x, weights, flops=[], model_size=[]):
         for i in range(len(self._ops)):
+            #print(weights[i].numpy())
             if weights[i].numpy() != 0:
                 flops.append(FLOPs.values()[i] * weights[i])
                 model_size.append(ModelSize.values()[i] * weights[i])
@@ -182,9 +183,10 @@ class ConvBNRelu(fluid.dygraph.Layer):
             act=None,
             bias_attr=False,
             use_cudnn=use_cudnn)
-        self.bn = BatchNorm(out_c, act="relu", is_test=False)
+        self.bn = BatchNorm(out_c, is_test=False)
 
     def forward(self, inputs):
+        inputs = fluid.layers.relu(inputs)
         conv = self.conv(inputs)
         bn = self.bn(conv)
         return bn
@@ -349,8 +351,12 @@ class EncoderLayer(Layer):
 
         tmp = self.conv0(tmp)  # (bs, hidden_size, seq_len, 1)
 
-        alphas = gumbel_softmax(self.alphas)
-        k = fluid.layers.reshape(gumbel_softmax(self.k), [-1])
+        #alphas = gumbel_softmax(self.alphas)
+        alphas = fluid.layers.softmax(self.alphas)
+
+        #k = fluid.layers.reshape(gumbel_softmax(self.k), [-1])
+        #k = fluid.layers.reshape(fluid.layers.softmax(self.k), [-1])
+
 
         outputs = []
         s0 = s1 = tmp
@@ -358,13 +364,6 @@ class EncoderLayer(Layer):
             s0, s1 = s1, self._cells[i](
                 s0, s1, alphas, flops=flops,
                 model_size=model_size)  # (bs, hidden_size, seq_len, 1)
-            enc_output = fluid.layers.transpose(
-                s1, [0, 2, 1, 3])  # (bs, seq_len, hidden_size, 1)
-            enc_output = fluid.layers.reshape(
-                enc_output, [-1, enc_output.shape[1],
-                             self._hidden_size])  # (bs, seq_len, hidden_size)
-            outputs.append(enc_output)
-            if self._search_layer and k[i].numpy() != 0:
-                outputs[-1] = outputs[-1] * k[i]
-                return outputs, k[i]
-        return outputs, 1.0
+
+        outputs = s1
+        return outputs

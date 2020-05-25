@@ -66,8 +66,8 @@ class AdaBERTClassifier(Layer):
         print(
             "----------------------load teacher model and test----------------------------------------"
         )
-        self.teacher = BERTClassifier(num_labels, model_path=self._teacher_model)
-        self.teacher.test(self._data_dir)
+        #self.teacher = BERTClassifier(num_labels, model_path=self._teacher_model)
+        #self.teacher.test(self._data_dir)
         print(
             "----------------------finish load teacher model and test----------------------------------------"
         )
@@ -120,67 +120,17 @@ class AdaBERTClassifier(Layer):
         labels = data_ids[4]
         flops = []
         model_size = []
-        enc_outputs, next_sent_feats, k_i = self.student(
+        enc_output = self.student(
             src_ids,
             position_ids,
             sentence_ids,
             flops=flops,
             model_size=model_size)
 
-        self.teacher.eval()
-        total_loss, t_logits, t_losses, accuracys, num_seqs = self.teacher(
-            data_ids)
-
-        # define kd loss
-        kd_losses = []
-
-        kd_weights = []
-        for i in range(len(next_sent_feats)):
-            j = int(np.ceil(i * (float(len(t_logits)) / len(next_sent_feats))))
-            kd_weights.append(t_losses[j].numpy())
-        kd_weights = 1 / np.array(kd_weights)
-
-        kd_weights = np.exp(kd_weights - np.max(kd_weights))
-
-        kd_weights = kd_weights / kd_weights.sum(axis=0)
-
-        for i in range(len(next_sent_feats)):
-            j = int(np.ceil(i * (float(len(t_logits)) / len(next_sent_feats))))
-            t_logit = t_logits[j]
-            s_sent_feat = next_sent_feats[i]
-            fc = self.cls_fc[i]
-            s_sent_feat = fluid.layers.dropout(
-                x=s_sent_feat,
-                dropout_prob=0.1,
-                dropout_implementation="upscale_in_train")
-            s_logits = fc(s_sent_feat)
-
-            t_probs = fluid.layers.softmax(t_logit)
-            s_probs = fluid.layers.softmax(s_logits)
-            t_probs.stop_gradient = True
-            kd_loss = t_probs * fluid.layers.log(s_probs / T)
-            kd_loss = fluid.layers.reduce_sum(kd_loss, dim=1)
-            kd_loss = kd_loss * kd_weights[i]
-            kd_losses.append(kd_loss)
-
-        kd_loss = fluid.layers.sum(kd_losses)
-        kd_loss = fluid.layers.reduce_mean(kd_loss, dim=0)
-
-        # define ce loss
-        ce_loss = fluid.layers.cross_entropy(s_probs, labels)
-        ce_loss = fluid.layers.reduce_mean(ce_loss) * k_i
-
-        # define e loss
-        model_size = fluid.layers.sum(model_size)
-        #        print("model_size: {}".format(model_size.numpy()/1e6))
-        model_size = model_size / self.student.max_model_size()
-        flops = fluid.layers.sum(flops) / self.student.max_flops()
-        e_loss = (len(next_sent_feats) * k_i / self._n_layer) * (
-            flops + model_size)
-        # define total loss
-        loss = (1 - self._gamma
-                ) * ce_loss - self._gamma * kd_loss + self._beta * e_loss
-        #        print("ce_loss: {}; kd_loss: {}; e_loss: {}".format((
-        #            1 - gamma) * ce_loss.numpy(), -gamma * kd_loss.numpy(), beta *
-        #                                                            e_loss.numpy()))
-        return loss, ce_loss, kd_loss, e_loss
+        ce_loss, probs = fluid.layers.softmax_with_cross_entropy(
+            logits=enc_output, label=labels, return_softmax=True)
+        loss = fluid.layers.mean(x=ce_loss)
+        num_seqs = fluid.layers.create_tensor(dtype='int64')
+        accuracy = fluid.layers.accuracy(
+            input=probs, label=labels, total=num_seqs)
+        return loss, accuracy

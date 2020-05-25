@@ -47,48 +47,41 @@ def main():
 
     with fluid.dygraph.guard(place):
         model = AdaBERTClassifier(
-            3,
+            8,
             teacher_model=teacher_model_dir,
             data_dir=data_dir
         )
 
         def train_one_epoch(model, train_loader, valid_loader, optimizer, epoch):
-            objs = AvgrageMeter()
             ce_losses = AvgrageMeter()
-            kd_losses = AvgrageMeter()
-            e_losses = AvgrageMeter()
+            accs = AvgrageMeter()
+            #e_losses = AvgrageMeter()
             model.train()
 
             step_id = 0
-            for train_data, valid_data in izip(train_loader(), valid_loader()):
-                loss, ce_loss, kd_loss, e_loss = model.loss(train_data)
+            for train_data in train_loader():
+                loss, acc = model.loss(train_data)
                 loss.backward()
 
-                #NOTE grad clip is removed
                 optimizer.minimize(loss)
                 model.clear_gradients()
 
                 batch_size = train_data[0].shape[0]
-                objs.update(loss.numpy(), batch_size)
-                ce_losses.update(ce_loss.numpy(), batch_size)
-                kd_losses.update(kd_loss.numpy(), batch_size)
-                e_losses.update(e_loss.numpy(), batch_size)
+                ce_losses.update(loss.numpy(), batch_size)
+                accs.update(acc.numpy(), batch_size)
+                # e_losses.update(e_loss.numpy(), batch_size)
 
                 if step_id % 10 == 0:
-                    logger.info(
-                        "Train Epoch {}, Step {}, loss {}; ce: {}; kd: {}; e: {}".
-                        format(epoch, step_id,
-                            loss.numpy(),
-                            ce_loss.numpy(), kd_loss.numpy(), e_loss.numpy()))
+                    logger.info("Train Epoch {}, Step {}, Lr {:.6f} loss {:.6f}; acc: {:.6f};".format(epoch, step_id, optimizer.current_step_lr(), ce_losses.avg[0], accs.avg[0]))
                 step_id += 1
 
         model_parameters = [
             p for p in model.parameters()
             if p.name not in [a.name for a in model.arch_parameters()]
         ]
-        step_per_epoch = int(num_imgs * 0.5 / batch_size)
+        step_per_epoch = int(num_imgs / batch_size)
         learning_rate = fluid.dygraph.CosineDecay(
-            0.025, step_per_epoch, epoch)
+            0.02, step_per_epoch, epoch)
         optimizer = fluid.optimizer.MomentumOptimizer(
             learning_rate,
             0.9,
