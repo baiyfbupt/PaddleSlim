@@ -17,6 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import six
 import json
 import numpy as np
@@ -52,9 +53,9 @@ class BertModelLayer(Layer):
         self._sent_types = sent_types
         self.return_pooled_out = return_pooled_out
 
-        self._word_emb_name = "s_word_embedding"
-        self._pos_emb_name = "s_pos_embedding"
-        self._sent_emb_name = "s_sent_embedding"
+        self._word_emb_name = "word_embedding"
+        self._pos_emb_name = "pos_embedding"
+        self._sent_emb_name = "sent_embedding"
         self._dtype = "float16" if use_fp16 else "float32"
 
         self._conv_type = conv_type
@@ -80,34 +81,51 @@ class BertModelLayer(Layer):
                 name=self._sent_emb_name, initializer=self._param_initializer),
             dtype=self._dtype)
 
+        BERT_BASE_PATH = "./data/pretrained_models/uncased_L-12_H-768_A-12/"
+        dir_path = BERT_BASE_PATH + "/dygraph_params/"
+
+        def load_numpy_weight(file_name):
+            if six.PY2:
+                res = np.load(
+                    os.path.join(dir_path, file_name), allow_pickle=True)
+            else:
+                res = np.load(
+                    os.path.join(dir_path, file_name),
+                    allow_pickle=True,
+                    encoding='latin1')
+            assert res is not None
+            return res
+
+        # load word embedding
+        _param = load_numpy_weight("word_embedding")
+        self._src_emb.set_dict({"weight": _param})
+        print("INIT word embedding")
+
+        _param = load_numpy_weight("pos_embedding")
+        self._pos_emb.set_dict({"weight": _param})
+        print("INIT pos embedding")
+
+        _param = load_numpy_weight("sent_embedding")
+        self._sent_emb.set_dict({"weight": _param})
+        print("INIT sent embedding")
+
         self._emb_fac = Linear(
             input_dim=self._emb_size,
             output_dim=self._hidden_size,
             param_attr=fluid.ParamAttr(name="s_emb_factorization"))
 
-        self.pooled_fc = Linear(
-            input_dim=self._hidden_size,
-            output_dim=self._hidden_size,
-            param_attr=fluid.ParamAttr(
-                name="s_pooled_fc.w_0", initializer=self._param_initializer),
-            bias_attr="s_pooled_fc.b_0",
-            act="tanh")
+        # self.pooled_fc = Linear(
+        #     input_dim=self._hidden_size,
+        #     output_dim=self._hidden_size,
+        #     param_attr=fluid.ParamAttr(
+        #         name="s_pooled_fc.w_0", initializer=self._param_initializer),
+        #     bias_attr="s_pooled_fc.b_0",
+        #     act="tanh")
 
         self._encoder = EncoderLayer(
             n_layer=self._n_layer,
             hidden_size=self._hidden_size,
-            conv_type=self._conv_type,
             search_layer=self._search_layer)
-
-        self.pool2d_avg = Pool2D(pool_type='avg', global_pooling=True)
-
-        self.out = Linear(
-            768,
-            3,
-            param_attr=ParamAttr(
-                initializer=MSRA(), name=self.full_name() + "fc7_weights"),
-            bias_attr=ParamAttr(name="fc7_offset"))
-
 
     def max_flops(self):
         return self._encoder.max_flops
@@ -116,7 +134,7 @@ class BertModelLayer(Layer):
         return self._encoder.max_model_size
 
     def arch_parameters(self):
-        return [self._encoder.alphas, self._encoder.k]
+        return [self._encoder.alphas]  #, self._encoder.k]
 
     def forward(self,
                 src_ids,
@@ -135,14 +153,8 @@ class BertModelLayer(Layer):
         emb_out = emb_out + sent_emb
 
         emb_out = self._emb_fac(emb_out)
+        # (bs, seq_len, 768)
 
-        enc_output = self._encoder(
-            emb_out, flops=flops, model_size=model_size)
-        #print(enc_output.shape)
-
-        enc_output = self.pool2d_avg(enc_output)
-        enc_output = fluid.layers.reshape(enc_output, shape=[-1, 0])
-        #print(enc_output.shape)
-        enc_output = self.out(enc_output)
+        enc_output = self._encoder(emb_out, flops=flops, model_size=model_size)
 
         return enc_output

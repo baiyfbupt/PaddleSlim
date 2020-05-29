@@ -44,7 +44,7 @@ class AdaBERTClassifier(Layer):
     def __init__(self,
                  num_labels,
                  n_layer=8,
-                 emb_size=128,
+                 emb_size=768,
                  hidden_size=768,
                  gamma=0.8,
                  beta=4,
@@ -105,7 +105,6 @@ class AdaBERTClassifier(Layer):
         return self.arch_parameters()
 
     def loss(self, data_ids):
-        T = 1.0
         src_ids = data_ids[0]
         position_ids = data_ids[1]
         sentence_ids = data_ids[2]
@@ -113,11 +112,7 @@ class AdaBERTClassifier(Layer):
         labels = data_ids[4]
 
         enc_output = self.student(
-            src_ids,
-            position_ids,
-            sentence_ids,
-            flops=[],
-            model_size=[])
+            src_ids, position_ids, sentence_ids, flops=[], model_size=[])
 
         ce_loss, probs = fluid.layers.softmax_with_cross_entropy(
             logits=enc_output, label=labels, return_softmax=True)
