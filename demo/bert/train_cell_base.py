@@ -37,14 +37,14 @@ def model_loss(model, data_ids):
 
 
 def train_one_epoch(model, architect, train_loader, valid_loader, optimizer,
-                    epoch, use_data_parallel):
+                    epoch, use_data_parallel, log_freq):
     ce_losses = AvgrageMeter()
     accs = AvgrageMeter()
     model.train()
 
     step_id = 0
-    for train_data in train_loader():
-
+    for train_data, valid_data in izip(train_loader(), valid_loader):
+        architect.step(train_data, valid_data)
         loss, acc = model_loss(model, train_data)
 
         if use_data_parallel:
@@ -62,7 +62,7 @@ def train_one_epoch(model, architect, train_loader, valid_loader, optimizer,
         ce_losses.update(loss.numpy(), batch_size)
         accs.update(acc.numpy(), batch_size)
 
-        if step_id % 10 == 0:
+        if step_id % log_freq == 0:
             logger.info(
                 "Train Epoch {}, Step {}, Lr {:.6f} loss {:.6f}; acc: {:.6f};".
                 format(epoch, step_id,
@@ -71,7 +71,7 @@ def train_one_epoch(model, architect, train_loader, valid_loader, optimizer,
         step_id += 1
 
 
-def valid_one_epoch(model, valid_loader, epoch):
+def valid_one_epoch(model, valid_loader, epoch, log_freq):
     ce_losses = AvgrageMeter()
     accs = AvgrageMeter()
     model.eval()
@@ -84,7 +84,7 @@ def valid_one_epoch(model, valid_loader, epoch):
         ce_losses.update(loss.numpy(), batch_size)
         accs.update(acc.numpy(), batch_size)
 
-        if step_id % 10 == 0:
+        if step_id % log_freq == 0:
             logger.info("Valid Epoch {}, Step {}, loss {:.6f}; acc: {:.6f};".
                         format(epoch, step_id, ce_losses.avg[0], accs.avg[0]))
         step_id += 1
@@ -108,6 +108,7 @@ def main():
     emb_size = 768
     max_layer = 8
     epoch = 80
+    log_freq = 10
 
     processor = MnliProcessor(
         data_dir=data_dir,
@@ -118,20 +119,23 @@ def main():
 
     train_reader = processor.data_generator(
         batch_size=batch_size,
-        phase='train',
+        phase='search_train',
         epoch=1,
         dev_count=1,
         shuffle=True)
-    if use_data_parallel:
-        train_reader = fluid.contrib.reader.distributed_batch_reader(
-            train_reader)
 
     val_reader = processor.data_generator(
         batch_size=batch_size,
-        phase='dev',
+        phase='search_valid',
         epoch=1,
         dev_count=1,
-        shuffle=False)
+        shuffle=True)
+
+    if use_data_parallel:
+        train_reader = fluid.contrib.reader.distributed_batch_reader(
+            train_reader)
+        valid_reader = fluid.contrib.reader.distributed_batch_reader(
+            valid_reader)
 
     with fluid.dygraph.guard(place):
         model = AdaBERTClassifier(
@@ -178,8 +182,10 @@ def main():
 
         for epoch_id in range(epoch):
             train_one_epoch(model, architect, train_loader, valid_loader,
-                            optimizer, epoch_id, use_data_parallel)
-            valid_one_epoch(model, valid_loader, epoch_id)
+                            optimizer, epoch_id, use_data_parallel, log_freq)
+            valid_one_epoch(model, valid_loader, epoch_id, log_freq)
+            print(model.student._encoder.alphas.numpy())
+            print("=" * 100)
 
 
 if __name__ == '__main__':
