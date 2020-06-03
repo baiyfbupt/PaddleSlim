@@ -137,6 +137,98 @@ def prepare_batch_data(insts,
     return return_list if len(return_list) > 1 else return_list[0]
 
 
+def prepare_batch_data_for_split_texts(insts,
+                                       total_token_num,
+                                       voc_size=0,
+                                       pad_id=None,
+                                       cls_id=None,
+                                       sep_id=None,
+                                       mask_id=None,
+                                       return_input_mask=True,
+                                       return_max_len=True,
+                                       return_num_token=False):
+    """
+    1. generate Tensor of data
+    2. generate Tensor of position
+    3. generate self attention mask, [shape: batch_size *  max_len * max_len]
+    """
+
+    batch_src_ids_a = [inst[0] for inst in insts]
+    batch_sent_ids_a = [inst[1] for inst in insts]
+    batch_pos_ids_a = [inst[2] for inst in insts]
+    # print(np.array(batch_src_ids_a).shape)
+    # print(np.array(batch_sent_ids_a).shape)
+    # print(np.array(batch_pos_ids_a).shape)
+    # print("="*100)
+
+    batch_src_ids_b = [inst[3] for inst in insts]
+    batch_sent_ids_b = [inst[4] for inst in insts]
+    batch_pos_ids_b = [inst[5] for inst in insts]
+
+    labels_list = []
+
+    for i in range(6, len(insts[0]), 1):
+        labels = [inst[i] for inst in insts]
+        labels = np.array(labels).astype("int64").reshape([-1, 1])
+        labels_list.append(labels)
+
+    # comment out because it is not used
+    # # First step: do mask without padding
+    # if mask_id >= 0:
+    #     out, mask_label, mask_pos = mask(
+    #         batch_src_ids,
+    #         total_token_num,
+    #         vocab_size=voc_size,
+    #         CLS=cls_id,
+    #         SEP=sep_id,
+    #         MASK=mask_id)
+    # else:
+    out_a = batch_src_ids_a
+
+    # Second step: padding a
+    src_id_a, self_input_mask_a = pad_batch_data(
+        out_a, pad_idx=pad_id, return_input_mask=True)
+    pos_id_a = pad_batch_data(
+        batch_pos_ids_a,
+        pad_idx=pad_id,
+        return_pos=False,
+        return_input_mask=False)
+    sent_id_a = pad_batch_data(
+        batch_sent_ids_a,
+        pad_idx=pad_id,
+        return_pos=False,
+        return_input_mask=False)
+
+    out_b = batch_src_ids_b
+
+    # Second step: padding b
+    src_id_b, self_input_mask_b = pad_batch_data(
+        out_b, pad_idx=pad_id, return_input_mask=True)
+    pos_id_b = pad_batch_data(
+        batch_pos_ids_b,
+        pad_idx=pad_id,
+        return_pos=False,
+        return_input_mask=False)
+    sent_id_b = pad_batch_data(
+        batch_sent_ids_b,
+        pad_idx=pad_id,
+        return_pos=False,
+        return_input_mask=False)
+
+    # comment out because it is not used
+    # if mask_id >= 0:
+    #     return_list = [
+    #         src_id, pos_id, sent_id, self_input_mask, mask_label, mask_pos
+    #     ] + labels_list
+    # else:
+    return_list = [
+        src_id_a, pos_id_a, sent_id_a, self_input_mask_a, src_id_b, pos_id_b,
+        sent_id_b, self_input_mask_b
+    ] + labels_list
+
+    return return_list if len(return_list) > 1 else return_list[0]
+
+
 def pad_batch_data(insts,
                    pad_idx=0,
                    return_pos=False,

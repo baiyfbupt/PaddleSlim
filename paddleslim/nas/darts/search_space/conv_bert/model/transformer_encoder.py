@@ -281,17 +281,26 @@ class EncoderLayer(Layer):
             param_attr=ParamAttr(initializer=MSRA()),
             bias_attr=ParamAttr(initializer=MSRA()))
 
-    def forward(self, enc_input, flops=[], model_size=[]):
-        tmp = fluid.layers.reshape(
-            enc_input, [-1, 1, enc_input.shape[1], enc_input.shape[2]])
+    def forward(self, enc_input_a, enc_input_b, flops=[], model_size=[]):
+        enc_a = fluid.layers.reshape(
+            enc_input_a, [-1, 1, enc_input_a.shape[1], enc_input_a.shape[2]])
+        enc_b = fluid.layers.reshape(
+            enc_input_b, [-1, 1, enc_input_b.shape[1], enc_input_b.shape[2]])
         # (bs, 1, seq_len, hidden_size)
-        #tmp = self.conv0(tmp)
 
-        tmp = self.stem(tmp)
+        enc_a = self.stem(enc_a)
+        enc_b = self.stem(enc_b)
         # (bs, n_channel, seq_len, 1)
+
+        # print(enc_a.shape)
+        # print(enc_b.shape)
+        # print("="*100)
+
         alphas = gumbel_softmax(self.alphas)
 
-        s0 = s1 = tmp
+        #s0 = s1 = tmp
+        s0 = enc_a
+        s1 = enc_b
         for i in range(self._n_layer):
             s0, s1 = s1, self._cells[i](s0, s1, alphas)
         # (bs, n_channel, seq_len, 1)

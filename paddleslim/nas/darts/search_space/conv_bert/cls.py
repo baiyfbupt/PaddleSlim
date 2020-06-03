@@ -105,14 +105,9 @@ class AdaBERTClassifier(Layer):
         return self.arch_parameters()
 
     def loss(self, data_ids):
-        src_ids = data_ids[0]
-        position_ids = data_ids[1]
-        sentence_ids = data_ids[2]
-        input_mask = data_ids[3]
-        labels = data_ids[4]
+        labels = data_ids[-1]
 
-        enc_output = self.student(
-            src_ids, position_ids, sentence_ids, flops=[], model_size=[])
+        enc_output = self.student(data_ids, flops=[], model_size=[])
 
         ce_loss, probs = fluid.layers.softmax_with_cross_entropy(
             logits=enc_output, label=labels, return_softmax=True)

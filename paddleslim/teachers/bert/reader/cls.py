@@ -18,7 +18,7 @@ import types
 import csv
 import numpy as np
 import tokenization
-from batching import prepare_batch_data
+from batching import prepare_batch_data, prepare_batch_data_for_split_texts
 
 
 class DataProcessor(object):
@@ -60,23 +60,44 @@ class DataProcessor(object):
         """Gets the list of labels for this data set."""
         raise NotImplementedError()
 
-    def convert_example(self, index, example, labels, max_seq_len, tokenizer):
+    def convert_example(self,
+                        index,
+                        example,
+                        labels,
+                        max_seq_len,
+                        tokenizer,
+                        split_two_texts=False):
         """Converts a single `InputExample` into a single `InputFeatures`."""
-        feature = convert_single_example(index, example, labels, max_seq_len,
-                                         tokenizer)
+        if split_two_texts:
+            feature = convert_single_example_split(index, example, labels,
+                                                   max_seq_len, tokenizer)
+        else:
+            feature = convert_single_example(index, example, labels,
+                                             max_seq_len, tokenizer)
+
         return feature
 
-    def generate_instance(self, feature):
+    def generate_instance(self, feature, split_two_texts=False):
         """
         generate instance with given feature
 
         Args:
             feature: InputFeatures(object). A single set of features of data.
         """
-        input_pos = list(range(len(feature.input_ids)))
-        return [
-            feature.input_ids, feature.segment_ids, input_pos, feature.label_id
-        ]
+        if split_two_texts:
+            input_pos_a = list(range(len(feature.input_ids_a)))
+            input_pos_b = list(range(len(feature.input_ids_b)))
+            return [
+                feature.input_ids_a, feature.segment_ids_a, input_pos_a,
+                feature.input_ids_b, feature.segment_ids_b, input_pos_b,
+                feature.label_id
+            ]
+        else:
+            input_pos = list(range(len(feature.input_ids)))
+            return [
+                feature.input_ids, feature.segment_ids, input_pos,
+                feature.label_id
+            ]
 
     def generate_batch_data(self,
                             batch_data,
@@ -85,18 +106,32 @@ class DataProcessor(object):
                             mask_id=-1,
                             return_input_mask=True,
                             return_max_len=False,
-                            return_num_token=False):
-        return prepare_batch_data(
-            batch_data,
-            total_token_num,
-            voc_size=-1,
-            pad_id=self.vocab["[PAD]"],
-            cls_id=self.vocab["[CLS]"],
-            sep_id=self.vocab["[SEP]"],
-            mask_id=-1,
-            return_input_mask=True,
-            return_max_len=False,
-            return_num_token=False)
+                            return_num_token=False,
+                            split_two_texts=False):
+        if not split_two_texts:
+            return prepare_batch_data(
+                batch_data,
+                total_token_num,
+                voc_size=-1,
+                pad_id=self.vocab["[PAD]"],
+                cls_id=self.vocab["[CLS]"],
+                sep_id=self.vocab["[SEP]"],
+                mask_id=-1,
+                return_input_mask=True,
+                return_max_len=False,
+                return_num_token=False)
+        else:
+            return prepare_batch_data_for_split_texts(
+                batch_data,
+                total_token_num,
+                voc_size=-1,
+                pad_id=self.vocab["[PAD]"],
+                cls_id=self.vocab["[CLS]"],
+                sep_id=self.vocab["[SEP]"],
+                mask_id=-1,
+                return_input_mask=True,
+                return_max_len=False,
+                return_num_token=False)
 
     @classmethod
     def _read_tsv(cls, input_file, quotechar=None):
@@ -125,7 +160,8 @@ class DataProcessor(object):
                        epoch=1,
                        dev_count=1,
                        shuffle=True,
-                       shuffle_seed=None):
+                       shuffle_seed=None,
+                       split_two_texts=False):
         """
         Generate data for train, dev or test.
     
@@ -156,7 +192,7 @@ class DataProcessor(object):
             raise ValueError(
                 "Unknown phase, which should be in ['train', 'dev', 'test'].")
 
-        def instance_reader():
+        def instance_reader(split_two_texts):
             for epoch_index in range(epoch):
                 if shuffle:
                     if shuffle_seed is not None:
@@ -165,20 +201,58 @@ class DataProcessor(object):
                 if phase == 'train' or phase == 'search_train':
                     self.current_train_epoch = epoch_index
                 for (index, example) in enumerate(examples):
+                    #print(example.text_a, example.text_b)
                     if phase == 'train' or phase == "search_train":
                         self.current_train_example = index + 1
                     feature = self.convert_example(
-                        index, example,
-                        self.get_labels(), self.max_seq_len, self.tokenizer)
+                        index,
+                        example,
+                        self.get_labels(),
+                        self.max_seq_len,
+                        self.tokenizer,
+                        split_two_texts=split_two_texts)
 
-                    instance = self.generate_instance(feature)
+                    instance = self.generate_instance(
+                        feature, split_two_texts=split_two_texts)
+
                     yield instance
+
+        def batch_reader_for_split_texts(reader, batch_size, in_tokens):
+            batch, total_token_num = [], 0
+            max_len_a = 0
+            max_len_b = 0
+            for instance in reader(split_two_texts=True):
+                token_ids_a = instance[0]
+                token_ids_b = instance[3]
+
+                max_len_a = max(max_len_a, len(token_ids_a))
+                max_len_b = max(max_len_b, len(token_ids_b))
+
+                if in_tokens:
+                    to_append = (len(batch) + 1) * (max_len_a + max_len_b
+                                                    ) <= batch_size
+                else:
+                    to_append = len(batch) < batch_size
+                if to_append:
+                    batch.append(instance)
+                    total_token_num += (len(token_ids_a) + len(token_ids_b))
+                else:
+                    yield batch, total_token_num
+                    batch, total_token_num, max_len_a, max_len_b = [
+                        instance
+                    ], len(token_ids_a) + len(token_ids_b), len(
+                        token_ids_a), len(token_ids_b)
+
+            if len(batch) > 0:
+                yield batch, total_token_num
 
         def batch_reader(reader, batch_size, in_tokens):
             batch, total_token_num, max_len = [], 0, 0
-            for instance in reader():
+            for instance in reader(split_two_texts=False):
+                #print(len(instance))
                 token_ids, sent_ids, pos_ids, label = instance[:4]
                 max_len = max(max_len, len(token_ids))
+
                 if in_tokens:
                     to_append = (len(batch) + 1) * max_len <= batch_size
                 else:
@@ -196,23 +270,45 @@ class DataProcessor(object):
 
         def wrapper():
             all_dev_batches = []
-            for batch_data, total_token_num in batch_reader(
-                    instance_reader, batch_size, self.in_tokens):
-                batch_data = self.generate_batch_data(
-                    batch_data,
-                    total_token_num,
-                    voc_size=-1,
-                    mask_id=-1,
-                    return_input_mask=True,
-                    return_max_len=False,
-                    return_num_token=False)
-                if len(all_dev_batches) < dev_count:
-                    all_dev_batches.append(batch_data)
+            if not split_two_texts:
+                for batch_data, total_token_num in batch_reader(
+                        instance_reader, batch_size, self.in_tokens):
+                    batch_data = self.generate_batch_data(
+                        batch_data,
+                        total_token_num,
+                        voc_size=-1,
+                        mask_id=-1,
+                        return_input_mask=True,
+                        return_max_len=False,
+                        return_num_token=False)
 
-                if len(all_dev_batches) == dev_count:
-                    for batch in all_dev_batches:
-                        yield batch
-                    all_dev_batches = []
+                    if len(all_dev_batches) < dev_count:
+                        all_dev_batches.append(batch_data)
+
+                    if len(all_dev_batches) == dev_count:
+                        for batch in all_dev_batches:
+                            yield batch
+                        all_dev_batches = []
+            else:
+                for batch_data, total_token_num in batch_reader_for_split_texts(
+                        instance_reader, batch_size, self.in_tokens):
+                    batch_data = self.generate_batch_data(
+                        batch_data,
+                        total_token_num,
+                        voc_size=-1,
+                        mask_id=-1,
+                        return_input_mask=True,
+                        return_max_len=False,
+                        return_num_token=False,
+                        split_two_texts=True)
+
+                    if len(all_dev_batches) < dev_count:
+                        all_dev_batches.append(batch_data)
+
+                    if len(all_dev_batches) == dev_count:
+                        for batch in all_dev_batches:
+                            yield batch
+                        all_dev_batches = []
 
         return wrapper
 
@@ -262,6 +358,20 @@ class InputFeatures(object):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
+        self.label_id = label_id
+
+
+class InputFeaturesForSplitTextPair(object):
+    """A single set of features of split text pair."""
+
+    def __init__(self, input_ids_a, input_mask_a, segment_ids_a, input_ids_b,
+                 input_mask_b, segment_ids_b, label_id):
+        self.input_ids_a = input_ids_a
+        self.input_mask_a = input_mask_a
+        self.segment_ids_a = segment_ids_a
+        self.input_ids_b = input_ids_b
+        self.input_mask_b = input_mask_b
+        self.segment_ids_b = segment_ids_b
         self.label_id = label_id
 
 
@@ -371,6 +481,7 @@ class MnliProcessor(DataProcessor):
                 label = "contradiction"
             else:
                 label = tokenization.convert_to_unicode(line[-1])
+            #print(guid, text_a, text_b, label)
             examples.append(
                 InputExample(
                     guid=guid, text_a=text_a, text_b=text_b, label=label))
@@ -467,14 +578,78 @@ def convert_single_example_to_unicode(guid, single_example):
     return InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label)
 
 
-def convert_single_example(ex_index, example, label_list, max_seq_length,
-                           tokenizer):
+def convert_single_example_split(ex_index, example, label_list, max_seq_length,
+                                 tokenizer):
     """Converts a single `InputExample` into a single `InputFeatures`."""
+
     label_map = {}
     for (i, label) in enumerate(label_list):
         label_map[label] = i
 
     tokens_a = tokenizer.tokenize(example.text_a)
+    tokens_b = tokenizer.tokenize(example.text_b)
+
+    # Account for [CLS] and [SEP] with "- 2"
+    if len(tokens_a) > max_seq_length - 2:
+        tokens_a = tokens_a[0:(max_seq_length - 2)]
+    if len(tokens_b) > max_seq_length - 2:
+        tokens_b = tokens_b[0:(max_seq_length - 2)]
+
+    # text_a
+    tokens_a_out = []
+    segment_ids_a = []
+    tokens_a_out.append("[CLS]")
+    segment_ids_a.append(0)
+    for token in tokens_a:
+        tokens_a_out.append(token)
+        segment_ids_a.append(0)
+    tokens_a_out.append("[SEP]")
+    segment_ids_a.append(0)
+
+    input_ids_a = tokenizer.convert_tokens_to_ids(tokens_a_out)
+    # The mask has 1 for real tokens and 0 for padding tokens. Only real
+    # tokens are attended to.
+    input_mask_a = [1] * len(input_ids_a)
+
+    # text_b
+    tokens_b_out = []
+    segment_ids_b = []
+    tokens_b_out.append("[CLS]")
+    segment_ids_b.append(0)
+    for token in tokens_b:
+        tokens_b_out.append(token)
+        segment_ids_b.append(0)
+    tokens_b_out.append("[SEP]")
+    segment_ids_b.append(0)
+
+    input_ids_b = tokenizer.convert_tokens_to_ids(tokens_b_out)
+    # The mask has 1 for real tokens and 0 for padding tokens. Only real
+    # tokens are attended to.
+    input_mask_b = [1] * len(input_ids_b)
+
+    label_id = label_map[example.label]
+
+    feature = InputFeaturesForSplitTextPair(
+        input_ids_a=input_ids_a,
+        input_mask_a=input_mask_a,
+        segment_ids_a=segment_ids_a,
+        input_ids_b=input_ids_b,
+        input_mask_b=input_mask_b,
+        segment_ids_b=segment_ids_b,
+        label_id=label_id)
+    return feature
+
+
+def convert_single_example(ex_index, example, label_list, max_seq_length,
+                           tokenizer):
+    """Converts a single `InputExample` into a single `InputFeatures`."""
+
+    label_map = {}
+    for (i, label) in enumerate(label_list):
+        label_map[label] = i
+
+    tokens_a = tokenizer.tokenize(example.text_a)
+
     tokens_b = None
     if example.text_b:
         tokens_b = tokenizer.tokenize(example.text_b)

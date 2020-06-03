@@ -18,24 +18,6 @@ def count_parameters_in_MB(all_params):
     return parameters_number / 1e6
 
 
-def model_loss(model, data_ids):
-    # src_ids = data_ids[0]
-    # position_ids = data_ids[1]
-    # sentence_ids = data_ids[2]
-    # input_mask = data_ids[3]
-    labels = data_ids[4]
-    labels.stop_gradient = True
-
-    enc_output = model(data_ids)
-
-    ce_loss, probs = fluid.layers.softmax_with_cross_entropy(
-        logits=enc_output, label=labels, return_softmax=True)
-    loss = fluid.layers.mean(x=ce_loss)
-    num_seqs = fluid.layers.create_tensor(dtype='int64')
-    accuracy = fluid.layers.accuracy(input=probs, label=labels, total=num_seqs)
-    return loss, accuracy
-
-
 def train_one_epoch(model, architect, train_loader, valid_loader, optimizer,
                     epoch, use_data_parallel, log_freq):
     ce_losses = AvgrageMeter()
@@ -43,9 +25,10 @@ def train_one_epoch(model, architect, train_loader, valid_loader, optimizer,
     model.train()
 
     step_id = 0
-    for train_data, valid_data in izip(train_loader(), valid_loader):
+    for train_data, valid_data in izip(train_loader(), valid_loader()):
+        #print(train_data)
         architect.step(train_data, valid_data)
-        loss, acc = model_loss(model, train_data)
+        loss, acc = model.loss(train_data)
 
         if use_data_parallel:
             loss = model.scale_loss(loss)
@@ -78,7 +61,7 @@ def valid_one_epoch(model, valid_loader, epoch, log_freq):
 
     step_id = 0
     for valid_data in valid_loader():
-        loss, acc = model_loss(model, valid_data)
+        loss, acc = model.loss(valid_data)
 
         batch_size = valid_data[0].shape[0]
         ce_losses.update(loss.numpy(), batch_size)
@@ -103,12 +86,13 @@ def main():
     num_samples = 392702
     max_seq_len = 128
     do_lower_case = True
-    batch_size = 128
+    batch_size = 64
     hidden_size = 768
-    emb_size = 768
+    emb_size = 128
     max_layer = 8
     epoch = 80
     log_freq = 10
+    split_two_texts = False
 
     processor = MnliProcessor(
         data_dir=data_dir,
@@ -122,14 +106,16 @@ def main():
         phase='search_train',
         epoch=1,
         dev_count=1,
-        shuffle=True)
+        shuffle=True,
+        split_two_texts=split_two_texts)
 
     val_reader = processor.data_generator(
         batch_size=batch_size,
         phase='search_valid',
         epoch=1,
         dev_count=1,
-        shuffle=True)
+        shuffle=True,
+        split_two_texts=split_two_texts)
 
     if use_data_parallel:
         train_reader = fluid.contrib.reader.distributed_batch_reader(
