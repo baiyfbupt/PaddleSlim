@@ -108,6 +108,10 @@ class BertModelLayer(Layer):
         return self._src_emb.parameters() + self._pos_emb.parameters(
         ) + self._sent_emb.parameters()
 
+    def emb_names(self):
+        return self._src_emb.parameters() + self._pos_emb.parameters(
+        ) + self._sent_emb.parameters()
+
     def max_flops(self):
         return self._encoder.max_flops
 

@@ -89,6 +89,7 @@ def main():
     # whether use multi-gpus
     device_num = fluid.dygraph.parallel.Env().nranks
     use_data_parallel = device_num > 1
+
     place = fluid.CUDAPlace(fluid.dygraph.parallel.Env(
     ).dev_id) if use_data_parallel else fluid.CUDAPlace(0)
 
