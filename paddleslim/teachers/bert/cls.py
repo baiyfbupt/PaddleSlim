@@ -120,12 +120,16 @@ class BERTClassifier(Layer):
         test_data_generator = processor.data_generator(
             batch_size=batch_size, phase='dev', epoch=1, shuffle=False)
 
+        # test train mode test_acc
         self.cls_model.eval()
+        print("test with test mode:...")
+
         total_cost, final_acc, avg_acc, total_num_seqs = [], [], [], []
         for batch in test_data_generator():
             data_ids = create_data(batch)
 
-            total_loss, _, _, np_acces, np_num_seqs = self.cls_model(data_ids)
+            total_loss, _, _, np_acces, np_num_seqs, fea = self.cls_model(
+                data_ids)
 
             np_loss = total_loss.numpy()
             np_acc = np_acces[-1].numpy()

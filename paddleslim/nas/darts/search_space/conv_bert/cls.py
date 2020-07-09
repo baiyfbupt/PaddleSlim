@@ -57,7 +57,7 @@ class AdaBERTClassifier(Layer):
                  use_fixed_gumbel=False,
                  gumbel_alphas=None,
                  fix_emb=False,
-                 t=5.0):
+                 t=1.0):
         super(AdaBERTClassifier, self).__init__()
         self._n_layer = n_layer
         self._num_labels = num_labels
@@ -78,8 +78,9 @@ class AdaBERTClassifier(Layer):
         self.teacher = BERTClassifier(
             num_labels, task_name=task_name, model_path=self._teacher_model)
         # global setting, will be overwritten when training(about 1% acc loss)
-        self.teacher.eval()
         self.teacher.test(self._data_dir)
+        self.teacher.eval()
+
         print(
             "----------------------finish load teacher model and test----------------------------------------"
         )
@@ -116,49 +117,67 @@ class AdaBERTClassifier(Layer):
     def loss(self, data_ids, epoch):
         labels = data_ids[4]
 
-        s_logits = self.student(data_ids, epoch)
+        s_logits, s_fea = self.student(data_ids, epoch)
 
-        t_enc_outputs, t_logits, t_losses, t_accs, _ = self.teacher(data_ids)
+        # make sure techer is compute in eval mode
+        self.teacher.eval()
+        t_total_loss, t_logits, t_losses, t_accs, _, t_fea = self.teacher(
+            data_ids)
+        if self.student.training:
+            self.student.train()
+        t_logits[-1].stop_gradient = True
+
+        #kd_loss = fluid.layers.mse_loss(s_logits[-1], t_logits[-1])
+        #kd_loss = fluid.layers.mse_loss(s_fea, t_fea)
+
+        #kd_loss = fluid.layers.reduce_sum(fluid.layers.square(s_logits[-1] - t_logits[-1]))
+
+        t_probs = fluid.layers.softmax(t_logits[-1] / self.T)
+        s_probs = fluid.layers.softmax(s_logits[-1] / self.T)
+        kd_loss = fluid.layers.reduce_mean(
+            fluid.layers.cross_entropy(
+                input=s_probs, label=t_probs, soft_label=True))
 
         #define kd loss
-        kd_weights = []
-        for i in range(len(s_logits)):
-            j = int(np.ceil(i * (float(len(t_logits)) / len(s_logits))))
-            kd_weights.append(t_losses[j].numpy())
+        # kd_weights = []
+        # for i in range(len(s_logits)):
+        #     j = int(np.ceil(i * (float(len(t_logits)) / len(s_logits))))
+        #     kd_weights.append(t_losses[j].numpy())
 
-        kd_weights = np.array(kd_weights)
-        kd_weights = np.squeeze(kd_weights)
-        kd_weights = to_variable(kd_weights)
-        kd_weights = fluid.layers.softmax(-kd_weights)
+        # kd_weights = np.array(kd_weights)
+        # kd_weights = np.squeeze(kd_weights)
+        # kd_weights = to_variable(kd_weights)
+        # kd_weights = fluid.layers.softmax(-kd_weights)
 
-        kd_losses = []
-        for i in range(len(s_logits)):
-            j = int(np.ceil(i * (float(len(t_logits)) / len(s_logits))))
-            t_logit = t_logits[j]
-            s_logit = s_logits[i]
-            t_logit.stop_gradient = True
-            t_probs = fluid.layers.softmax(t_logit)  # P_j^T
-            s_probs = fluid.layers.softmax(s_logit / self.T)  #P_j^S
-            #kd_loss = -t_probs * fluid.layers.log(s_probs)
-            kd_loss = fluid.layers.cross_entropy(
-                input=s_probs, label=t_probs, soft_label=True)
-            kd_loss = fluid.layers.reduce_mean(kd_loss)
-            kd_loss = fluid.layers.scale(kd_loss, scale=kd_weights[i])
-            kd_losses.append(kd_loss)
-        kd_loss = fluid.layers.sum(kd_losses)
+        # kd_losses = []
+        # for i in range(len(s_logits)):
+        #     j = int(np.ceil(i * (float(len(t_logits)) / len(s_logits))))
+        #     t_logit = t_logits[j]
+        #     s_logit = s_logits[i]
+        #     t_logit.stop_gradient = True
+        #     t_probs = fluid.layers.softmax(t_logit)  # P_j^T
+        #     s_probs = fluid.layers.softmax(s_logit / self.T)  #P_j^S
+        #     #kd_loss = -t_probs * fluid.layers.log(s_probs)
+        #     kd_loss = fluid.layers.cross_entropy(
+        #         input=s_probs, label=t_probs, soft_label=True)
+        #     kd_loss = fluid.layers.reduce_mean(kd_loss)
+        #     kd_loss = fluid.layers.scale(kd_loss, scale=kd_weights[i])
+        #     kd_losses.append(kd_loss)
+        # kd_loss = fluid.layers.sum(kd_losses)
 
         losses = []
-        for logit in s_logits:
+        for logit in [s_logits[-1]]:
             ce_loss, probs = fluid.layers.softmax_with_cross_entropy(
                 logits=logit, label=labels, return_softmax=True)
+            #print("training: ", self.student.training, probs.numpy())
+
             loss = fluid.layers.mean(x=ce_loss)
             losses.append(loss)
 
-            num_seqs = fluid.layers.create_tensor(dtype='int64')
-            accuracy = fluid.layers.accuracy(
-                input=probs, label=labels, total=num_seqs)
+            accuracy = fluid.layers.accuracy(input=probs, label=labels)
         ce_loss = fluid.layers.sum(losses)
 
-        total_loss = (1 - self._gamma) * ce_loss + self._gamma * kd_loss
+        #total_loss = (1 - self._gamma) * ce_loss + self._gamma * kd_loss
+        total_loss = kd_loss
 
-        return total_loss, accuracy, ce_loss, kd_loss, s_logits
+        return total_loss, accuracy, ce_loss, kd_loss, s_logits, t_accs[-1]

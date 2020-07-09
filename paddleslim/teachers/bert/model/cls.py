@@ -118,4 +118,5 @@ class ClsModelLayer(Layer):
             accuracys.append(accuracy)
         total_loss = fluid.layers.sum(losses)
 
-        return total_loss, logits, losses, accuracys, num_seqs
+        return total_loss, logits, losses, accuracys, num_seqs, next_sent_feat[
+            -1]

@@ -45,8 +45,8 @@ OPS = {
 
     'avg_pool_3': lambda n_channel, name: Pool2D(pool_size=(3,1), pool_padding=(1, 0), pool_type='avg'),
     'max_pool_3': lambda n_channel, name: Pool2D(pool_size=(3,1), pool_padding=(1, 0), pool_type='max'),
-    'none': lambda n_channel, name: Zero(),
     'skip_connect': lambda n_channel, name: Identity(),
+    'none': lambda n_channel, name: Zero(),
 }
 
 
@@ -61,10 +61,10 @@ class MixedOp(fluid.dygraph.Layer):
             if 'pool' in primitive:
                 gama = ParamAttr(
                     initializer=fluid.initializer.Constant(value=1),
-                    trainable=False)
+                    trainable=True)
                 beta = ParamAttr(
                     initializer=fluid.initializer.Constant(value=0),
-                    trainable=False)
+                    trainable=True)
                 BN = BatchNorm(n_channel, param_attr=gama, bias_attr=beta)
                 op = fluid.dygraph.Sequential(op, BN)
             ops.append(op)
@@ -125,7 +125,7 @@ class ReluConvBN(fluid.dygraph.Layer):
                  filter_size=[3, 1],
                  dilation=1,
                  stride=1,
-                 affine=False,
+                 affine=True,
                  use_cudnn=True,
                  name=None):
         super(ReluConvBN, self).__init__()
@@ -210,40 +210,40 @@ class EncoderLayer(Layer):
         super(EncoderLayer, self).__init__()
         self._n_layer = n_layer
         self._hidden_size = hidden_size
-        self._n_channel = 128
+        self._n_channel = hidden_size
         self._steps = 3
         self._n_ops = len(ConvBN_PRIMITIVES)
         self.use_fixed_gumbel = use_fixed_gumbel
 
-        self.stem0 = fluid.dygraph.Sequential(
-            Conv2D(
-                num_channels=1,
-                num_filters=self._n_channel,
-                filter_size=[3, self._hidden_size],
-                padding=[1, 0],
-                param_attr=fluid.ParamAttr(initializer=MSRA()),
-                bias_attr=False),
-            BatchNorm(
-                num_channels=self._n_channel,
-                param_attr=fluid.ParamAttr(
-                    initializer=fluid.initializer.Constant(value=1)),
-                bias_attr=fluid.ParamAttr(
-                    initializer=fluid.initializer.Constant(value=0))))
+        # self.stem0 = fluid.dygraph.Sequential(
+        #     Conv2D(
+        #         num_channels=1,
+        #         num_filters=self._n_channel,
+        #         filter_size=[3, self._hidden_size],
+        #         padding=[1, 0],
+        #         param_attr=fluid.ParamAttr(initializer=MSRA()),
+        #         bias_attr=False),
+        #     BatchNorm(
+        #         num_channels=self._n_channel,
+        #         param_attr=fluid.ParamAttr(
+        #             initializer=fluid.initializer.Constant(value=1)),
+        #         bias_attr=fluid.ParamAttr(
+        #             initializer=fluid.initializer.Constant(value=0))))
 
-        self.stem1 = fluid.dygraph.Sequential(
-            Conv2D(
-                num_channels=1,
-                num_filters=self._n_channel,
-                filter_size=[3, self._hidden_size],
-                padding=[1, 0],
-                param_attr=fluid.ParamAttr(initializer=MSRA()),
-                bias_attr=False),
-            BatchNorm(
-                num_channels=self._n_channel,
-                param_attr=fluid.ParamAttr(
-                    initializer=fluid.initializer.Constant(value=1)),
-                bias_attr=fluid.ParamAttr(
-                    initializer=fluid.initializer.Constant(value=0))))
+        # self.stem1 = fluid.dygraph.Sequential(
+        #     Conv2D(
+        #         num_channels=1,
+        #         num_filters=self._n_channel,
+        #         filter_size=[3, self._hidden_size],
+        #         padding=[1, 0],
+        #         param_attr=fluid.ParamAttr(initializer=MSRA()),
+        #         bias_attr=False),
+        #     BatchNorm(
+        #         num_channels=self._n_channel,
+        #         param_attr=fluid.ParamAttr(
+        #             initializer=fluid.initializer.Constant(value=1)),
+        #         bias_attr=fluid.ParamAttr(
+        #             initializer=fluid.initializer.Constant(value=0))))
 
         cells = []
         for i in range(n_layer):
@@ -271,10 +271,10 @@ class EncoderLayer(Layer):
                 num_channels=self._n_channel,
                 param_attr=fluid.ParamAttr(
                     initializer=fluid.initializer.Constant(value=1),
-                    trainable=False),
+                    trainable=True),
                 bias_attr=fluid.ParamAttr(
                     initializer=fluid.initializer.Constant(value=0),
-                    trainable=False))
+                    trainable=True))
             out = Linear(
                 self._n_channel,
                 num_labels,
@@ -311,17 +311,28 @@ class EncoderLayer(Layer):
 
         s0 = fluid.layers.unsqueeze(enc_input_0, [1])
         s1 = fluid.layers.unsqueeze(enc_input_1, [1])
-        s0 = self.stem0(s0)
-        s1 = self.stem1(s1)
+        s0 = fluid.layers.transpose(s0, [0, 3, 2, 1])
+        s1 = fluid.layers.transpose(s1, [0, 3, 2, 1])
+
+        # s0 = self.stem0(s0)
+        # s1 = self.stem1(s1)
 
         enc_outputs = []
+        fea = []
+
         for i in range(self._n_layer):
             s0, s1 = s1, self._cells[i](s0, s1, alphas)
             # (bs, n_channel, seq_len, 1)
             tmp = self._bns[i](s1)
+            tmp = s1
             tmp = self.pool2d_avg(tmp)
             tmp = fluid.layers.reshape(tmp, shape=[-1, 0])
+            fea.append(tmp)
+            tmp = fluid.layers.dropout(
+                x=tmp,
+                dropout_prob=0.1,
+                dropout_implementation="upscale_in_train")
             tmp = self._outs[i](tmp)
             enc_outputs.append(tmp)
 
-        return enc_outputs
+        return enc_outputs, fea[-1]

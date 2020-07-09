@@ -91,6 +91,11 @@ class BertModelLayer(Layer):
             output_dim=self._hidden_size,
             param_attr=fluid.ParamAttr(name="s_emb_factorization"))
 
+        self._emb_fac_1 = Linear(
+            input_dim=self._emb_size,
+            output_dim=self._hidden_size,
+            param_attr=fluid.ParamAttr(name="s_emb_factorization_1"))
+
         self._encoder = EncoderLayer(
             num_labels=num_labels,
             n_layer=self._n_layer,
@@ -98,10 +103,6 @@ class BertModelLayer(Layer):
             search_layer=self._search_layer,
             use_fixed_gumbel=self.use_fixed_gumbel,
             gumbel_alphas=gumbel_alphas)
-
-    def emb_names(self):
-        return self._src_emb.parameters() + self._pos_emb.parameters(
-        ) + self._sent_emb.parameters()
 
     def emb_names(self):
         return self._src_emb.parameters() + self._pos_emb.parameters(
@@ -129,6 +130,6 @@ class BertModelLayer(Layer):
         emb_out_1 = self._emb_fac(src_emb_1)
         # (bs, seq_len, hidden_size)
 
-        enc_outputs = self._encoder(emb_out_0, emb_out_1, epoch)
+        enc_outputs, fea = self._encoder(emb_out_0, emb_out_1, epoch)
 
-        return enc_outputs
+        return enc_outputs, fea

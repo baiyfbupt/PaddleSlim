@@ -10,26 +10,34 @@ import pickle
 
 import logging
 from paddleslim.common import AvgrageMeter, get_logger
+from paddleslim.nas.darts import count_parameters_in_MB
+
 logger = get_logger(__name__, level=logging.INFO)
 
 
 def valid_one_epoch(model, valid_loader, epoch, log_freq):
     accs = AvgrageMeter()
     ce_losses = AvgrageMeter()
-    model.student.eval()
+    t_accs = AvgrageMeter()
+
+    model.eval()
 
     step_id = 0
     for valid_data in valid_loader():
         try:
-            loss, acc, ce_loss, _, _ = model._layers.loss(valid_data, epoch)
+            loss, acc, ce_loss, _, _, t_acc = model._layers.loss(valid_data,
+                                                                 epoch)
         except:
-            loss, acc, ce_loss, _, _ = model.loss(valid_data, epoch)
+            loss, acc, ce_loss, _, _, t_acc = model.loss(valid_data, epoch)
 
         batch_size = valid_data[0].shape[0]
         ce_losses.update(ce_loss.numpy(), batch_size)
         accs.update(acc.numpy(), batch_size)
+        t_accs.update(t_acc.numpy(), batch_size)
+
         step_id += 1
-    return ce_losses.avg[0], accs.avg[0]
+
+    return ce_losses.avg[0], accs.avg[0], t_accs.avg[0]
 
 
 def train_one_epoch(model, train_loader, optimizer, epoch, use_data_parallel,
@@ -38,18 +46,19 @@ def train_one_epoch(model, train_loader, optimizer, epoch, use_data_parallel,
     accs = AvgrageMeter()
     ce_losses = AvgrageMeter()
     kd_losses = AvgrageMeter()
-    model.student.train()
+    t_accs = AvgrageMeter()
+    model.train()
 
     step_id = 0
     for train_data in train_loader():
         batch_size = train_data[0].shape[0]
 
         if use_data_parallel:
-            total_loss, acc, ce_loss, kd_loss, _ = model._layers.loss(
+            total_loss, acc, ce_loss, kd_loss, _, t_acc = model._layers.loss(
                 train_data, epoch)
         else:
-            total_loss, acc, ce_loss, kd_loss, _ = model.loss(train_data,
-                                                              epoch)
+            total_loss, acc, ce_loss, kd_loss, _, t_acc = model.loss(
+                train_data, epoch)
 
         if use_data_parallel:
             total_loss = model.scale_loss(total_loss)
@@ -63,19 +72,23 @@ def train_one_epoch(model, train_loader, optimizer, epoch, use_data_parallel,
         accs.update(acc.numpy(), batch_size)
         ce_losses.update(ce_loss.numpy(), batch_size)
         kd_losses.update(kd_loss.numpy(), batch_size)
+        t_accs.update(t_acc.numpy(), batch_size)
 
         if step_id % log_freq == 0:
             logger.info(
-                "Train Epoch {}, Step {}, Lr {:.6f} total_loss {:.6f}; ce_loss {:.6f}, kd_loss {:.6f}, train_acc {:.6f};".
+                "Train Epoch {}, Step {}, Lr {:.6f} total_loss {:.6f}; ce_loss {:.6f}, kd_loss {:.6f}, train_acc {:.6f}, teacher_acc {:.6f};".
                 format(epoch, step_id,
-                       optimizer.current_step_lr(), total_losses.avg[0],
-                       ce_losses.avg[0], kd_losses.avg[0], accs.avg[0]))
+                       optimizer.current_step_lr(), total_losses.avg[
+                           0], ce_losses.avg[0], kd_losses.avg[0], accs.avg[0],
+                       t_accs.avg[0]))
         step_id += 1
+    return total_losses.avg[0], accs.avg[0]
 
 
 def main():
     # whether use multi-gpus
-    use_data_parallel = False
+    device_num = fluid.dygraph.parallel.Env().nranks
+    use_data_parallel = device_num > 1
     place = fluid.CUDAPlace(fluid.dygraph.parallel.Env(
     ).dev_id) if use_data_parallel else fluid.CUDAPlace(0)
 
@@ -88,12 +101,12 @@ def main():
 
     max_seq_len = 128
     batch_size = 192
-    hidden_size = 768
+    hidden_size = 128
     emb_size = 768
     epoch = 80
-    log_freq = 10
+    log_freq = 1
 
-    task_name = 'mnli'
+    task_name = 'mrpc'
 
     if task_name == 'mrpc':
         data_dir = "./data/glue_data/MRPC/"
@@ -110,7 +123,6 @@ def main():
         num_labels = 3
         processor_func = MnliProcessor
 
-    device_num = fluid.dygraph.parallel.Env().nranks
     use_fixed_gumbel = True
     train_phase = "train"
     val_phase = "dev"
@@ -129,7 +141,11 @@ def main():
             emb_size=emb_size,
             teacher_model=teacher_model_dir,
             data_dir=data_dir,
-            use_fixed_gumbel=use_fixed_gumbel)
+            use_fixed_gumbel=use_fixed_gumbel,
+            t=1.0)
+
+        logger.info("param size = {:.6f}MB".format(
+            count_parameters_in_MB(model.student.parameters())))
 
         learning_rate = fluid.dygraph.CosineDecay(2e-2, step_per_epoch, epoch)
 
@@ -174,7 +190,8 @@ def main():
             capacity=128,
             use_double_buffer=True,
             iterable=True,
-            return_list=True)
+            return_list=True,
+            use_multiprocess=True)
         dev_loader = fluid.io.DataLoader.from_generator(
             capacity=128,
             use_double_buffer=True,
@@ -190,14 +207,18 @@ def main():
 
         best_valid_acc = 0
         for epoch_id in range(epoch):
-            train_one_epoch(model, train_loader, optimizer, epoch_id,
-                            use_data_parallel, log_freq)
-            loss, acc = valid_one_epoch(model, dev_loader, epoch_id, log_freq)
+            total_loss, train_acc = train_one_epoch(
+                model, train_loader, optimizer, epoch_id, use_data_parallel,
+                log_freq)
+            logger.info("train set, total_loss {:.6f}; acc {:.6f};".format(
+                total_loss, train_acc))
+            loss, acc, t_acc = valid_one_epoch(model, dev_loader, epoch_id,
+                                               log_freq)
             if acc > best_valid_acc:
                 best_valid_acc = acc
             logger.info(
-                "dev set, ce_loss {:.6f}; acc {:.6f}, best_acc {:.6f};".format(
-                    loss, acc, best_valid_acc))
+                "dev set, ce_loss {:.6f}; teacher_acc: {:.6f}, acc {:.6f}, best_acc {:.6f};".
+                format(loss, t_acc, acc, best_valid_acc))
 
 
 if __name__ == '__main__':
